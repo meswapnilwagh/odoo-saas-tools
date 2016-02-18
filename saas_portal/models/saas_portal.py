@@ -111,11 +111,7 @@ class SaasPortalServer(models.Model):
         res = requests.get(url, verify=(self.request_scheme == 'https' and self.verify_ssl))
 
         if res.ok != True:
-            msg = """Status Code - %s
-Reason - %s
-URL - %s
-            """ % (res.status_code, res.reason, res.url)            
-            raise Warning(msg)
+            raise Warning('Reason: %s \n Message: %s' % (res.reason, res.content))
         data = simplejson.loads(res.text)
 
         for r in data:
@@ -146,7 +142,7 @@ class SaasPortalPlan(models.Model):
     demo = fields.Boolean('Install Demo Data')
     maximum_allowed_db_per_partner = fields.Integer(help='maximum allowed databases per customer', default=0)
 
-    max_users = fields.Char('Max users allowed')
+    max_users = fields.Char('Initial Max users', default='0')
     total_storage_limit = fields.Integer('Total storage limit (MB)')
     block_on_expiration = fields.Boolean('Block clients on expiration', default=False)
     block_on_storage_exceed = fields.Boolean('Block clients on storage exceed', default=False)
@@ -315,16 +311,14 @@ class SaasPortalPlan(models.Model):
                                                                       params=werkzeug.url_encode(params))
         res = requests.get(url, verify=(plan.server_id.request_scheme == 'https' and plan.server_id.verify_ssl))
         if res.ok != True:
-            msg = """Status Code - %s
-Reason - %s
-URL - %s
-            """ % (res.status_code, res.reason, res.url)
-            raise Warning(msg)
+            raise Warning('Reason: %s \n Message: %s' % (res.reason, res.content))
         return self.action_sync_server()
 
-    @api.one
+    @api.multi
     def action_sync_server(self):
-        self.server_id.action_sync_server()
+        for r in self:
+            r.server_id.action_sync_server()
+        return True
 
     @api.multi
     def edit_template(self):
@@ -336,7 +330,8 @@ URL - %s
 
     @api.multi
     def delete_template(self):
-        res = self[0].template_id.delete_database()
+        self.ensure_one()
+        res = self.template_id.delete_database_server()
         return res
 
 
@@ -592,10 +587,14 @@ class SaasPortalClient(models.Model):
     @api.multi
     def send_expiration_info_to_client_db(self):
         for record in self:
+            # TODO: how to do refactoring for params sending
+            # max_users should be updated in client each time the new invoice is paid
+            max_users = record.invoice_lines.sorted(key=lambda r: r.create_date)[0].max_users
             if record.expiration_datetime:
                 payload = {
                     'params': [{'key': 'saas_client.expiration_datetime', 'value': record.expiration_datetime, 'hidden': True},
-                               {'key': 'saas_client.trial', 'value': 'False', 'hidden': True}],
+                               {'key': 'saas_client.trial', 'value': 'False', 'hidden': True},
+                               {'key': 'saas_client.max_users', 'value': max_users, 'hidden': True}],
                 }
                 self.env['saas.config'].do_upgrade_database(payload, record.id)
 
